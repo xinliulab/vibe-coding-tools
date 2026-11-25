@@ -22,16 +22,16 @@ Clone this repository once, then link the skill folder into `~/.claude/skills`, 
 macOS:
 
 ```bash
-git clone https://github.com/xinliulab/vibe-coding-presenter.git ~/vibe-coding-presenter
+git clone https://github.com/xinliulab/vibe-coding-tools.git ~/vibe-coding-tools
 mkdir -p ~/.claude/skills
-ln -s ~/vibe-coding-presenter/session-manager ~/.claude/skills/session-manager
+ln -s ~/vibe-coding-tools/session-manager ~/.claude/skills/session-manager
 ```
 
 Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/xinliulab/vibe-coding-presenter.git "$HOME\vibe-coding-presenter"
-New-Item -ItemType Junction -Path "$HOME\.claude\skills\session-manager" -Target "$HOME\vibe-coding-presenter\session-manager"
+git clone https://github.com/xinliulab/vibe-coding-tools.git "$HOME\vibe-coding-tools"
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\session-manager" -Target "$HOME\vibe-coding-tools\session-manager"
 ```
 
 ### Use
