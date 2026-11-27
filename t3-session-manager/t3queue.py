@@ -93,7 +93,7 @@ def fingerprint(t):
     return f"{t.get('latestRunId')}|{t.get('status')}"
 
 
-def snapshot(self_id):
+def snapshot(self_id, remote_file=None):
     state = load_state()
     now = dt.datetime.now(dt.timezone.utc)
     queue, working, quiet = [], [], []
@@ -144,8 +144,50 @@ def snapshot(self_id):
                 "waitedMin": max(0, int((now - upd).total_seconds() // 60)) if upd else None,
                 "updatedAt": t.get("updatedAt"),
             })
+    for q in queue:
+        q.update({"machine": "this machine", "environmentId": None, "threadId": q["id"]})
+    if remote_file:
+        add_remote(remote_file, state, now, queue, working, quiet)
     queue.sort(key=lambda q: q.get("updatedAt") or "")
     return {"queue": queue, "working": working, "handledQuiet": quiet}
+
+
+def add_remote(remote_file, state, now, queue, working, quiet):
+    """Merge thread lists from linked machines, fetched by the agent with T3's own
+    t3_thread_list tool and saved as JSON:
+    [{"environmentId": "...", "label": "...", "threads": [<t3_thread_list items>]}, ...]"""
+    blocks = json.loads(Path(remote_file).read_text(encoding="utf-8-sig"))
+    if isinstance(blocks, dict):
+        blocks = [blocks]
+    for b in blocks:
+        env = b.get("environmentId")
+        label = b.get("label") or env
+        for t in b.get("threads", []):
+            tid = t.get("threadId")
+            if not env or not tid:
+                continue
+            key = f"{env}/{tid}"
+            if key in state["ignored"] or t.get("latestRunId") is None:
+                continue
+            if t.get("settled") or t.get("snoozed"):
+                continue
+            status = t.get("status")
+            title = t.get("title") or "(untitled)"
+            if status in LIVE:
+                working.append(f"{title} ({label})")
+                continue
+            kind = "waiting" if status == "waiting" else FINISHED.get(status, status or "unknown")
+            if state["handled"].get(key) == fingerprint(t):
+                quiet.append(f"{title} ({label})")
+                continue
+            upd = parse_time(t.get("updatedAt", ""))
+            queue.append({
+                "id": key, "machine": label, "environmentId": env, "threadId": tid,
+                "title": title, "project": t.get("projectId"), "kind": kind, "status": status,
+                "provider": t.get("providerInstanceId"), "model": t.get("model"),
+                "waitedMin": max(0, int((now - upd).total_seconds() // 60)) if upd else None,
+                "updatedAt": t.get("updatedAt"), "fp": fingerprint(t),
+            })
 
 
 def thread_fingerprint(tid):
@@ -166,6 +208,9 @@ def main():
     g.add_argument("--last", metavar="ID", help="Print the thread's latest messages.")
     g.add_argument("--watch", action="store_true", help="Print READY lines as threads newly finish.")
     ap.add_argument("--message-file", help="With --send: read the message from this UTF-8 file instead of stdin.")
+    ap.add_argument("--remote", metavar="FILE",
+                    help="Also queue threads from linked machines: a JSON file of t3_thread_list results per environment.")
+    ap.add_argument("--fp", help="With --mark on another machine's thread: the queue item's fp.")
     ap.add_argument("--messages", type=int, default=6, help="How many messages --last prints.")
     ap.add_argument("--interval", type=int, default=20, help="Seconds between checks in --watch.")
     a = ap.parse_args()
@@ -175,7 +220,12 @@ def main():
 
     if a.mark or a.unmark or a.ignore or a.unignore:
         s = load_state()
-        if a.mark:
+        if a.mark and "/" in a.mark:           # a thread on a linked machine: env/thread
+            if not a.fp:
+                sys.exit(json.dumps({"error": "--mark on another machine needs --fp (the queue item's fp)"}))
+            s["handled"][a.mark] = a.fp
+            msg = {"marked": a.mark}
+        elif a.mark:
             fp, title = thread_fingerprint(a.mark)
             s["handled"][a.mark] = fp
             msg = {"marked": a.mark, "title": title}
@@ -241,7 +291,7 @@ def main():
                     seen.add(key)
                     print(f"READY: {q['title']} | {q['kind']} | {q['id']}", flush=True)
 
-    print(json.dumps(snapshot(self_id), ensure_ascii=False, indent=1))
+    print(json.dumps(snapshot(self_id, a.remote), ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":

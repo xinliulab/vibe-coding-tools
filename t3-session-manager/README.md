@@ -6,6 +6,8 @@
 
 T3 Code Session Manager is the [Session Manager](../session-manager/) for [T3 Code](https://t3.codes). T3 Code runs Claude Code, Codex, and other coding agents side by side in one app. This skill makes one T3 Code thread the manager of all the others, whichever agent they use. You talk only to the manager. It shows you the thread that finished first and has waited longest, passes your reply into that thread word for word, and then shows the next one.
 
+It also covers your **other machines**. When you link other T3 Code machines to this one (**Settings → Labs → Linked environments**, then link them under **Settings → Environments**), their threads join the same queue, labeled with the machine's name. The manager reads and relays them through T3 Code's own agent tools.
+
 Works on **Windows**, **macOS**, and **Linux**. It needs Python 3 and nothing else.
 
 ### Requirements
@@ -46,7 +48,8 @@ You can also say `next`, `skip`, `never show it`, or `full` (to see its whole la
 - The manager relays only what you type in its own chat. It refuses messages that reach it in any other way, such as through `t3 thread send`.
 - Approvals can only be answered inside their own thread. The manager tells you which thread to open.
 - These threads are left out: threads you settled or snoozed in T3 Code, and history that T3 Code imported from other apps but never ran itself.
-- Each computer runs its own manager, and it sees only the threads on that computer.
+- The manager sees the threads on its own computer and on the machines linked to it. A machine that is linked but not reachable right now is skipped until it is.
+- Automatic reports ("tell me when one finishes") watch only the manager's own computer. Linked machines are checked each time the queue is rebuilt.
 - To find your projects, the helper reads T3 Code's local database (read-only). A T3 Code update that changes this database could require an update here.
 - State (which threads you skipped or hid) lives in `~/.claude/t3-session-manager/state.json`.
 
@@ -60,6 +63,8 @@ You can also say `next`, `skip`, `never show it`, or `full` (to see its whole la
 ## 中文
 
 T3 Code Session Manager 是给 [T3 Code](https://t3.codes) 用的 [Session Manager](../session-manager/)。T3 Code 把 Claude Code、Codex 等写代码的 agent 放在一个 app 里一起用。这个技能让其中一个 T3 Code 对话当"管理员"，管理其他所有对话，不管它们用的是哪家 agent。你只跟管理员说话：它按完成的先后，把等得最久的那个对话拿给你看；你回什么，它就原话转给那个对话，然后给你看下一个。
+
+它也能管你的**其他电脑**。把别的 T3 Code 电脑和这台连起来以后（先打开 **Settings → Labs → Linked environments**，再到 **Settings → Environments** 里连接），那些电脑上的对话也会排进同一个队列，前面标着是哪台电脑。管理员用 T3 Code 自带的 agent 工具去读那些对话、转发你的话。
 
 支持 **Windows**、**macOS** 和 **Linux**，只需要 Python 3。
 
@@ -86,6 +91,7 @@ T3 Code Session Manager 是给 [T3 Code](https://t3.codes) 用的 [Session Manag
 - 管理员只转发你在它自己对话框里打的字。用别的办法塞给它的消息（比如 `t3 thread send`），它会拒绝转发。
 - 权限确认只能在那个对话里点，管理员会告诉你该去哪个对话。
 - 以下对话不会出现在队列里：你在 T3 Code 里标为完成（settle）或者稍后提醒（snooze）的对话，以及 T3 Code 从别的 app 导入、但从没在 T3 Code 里跑过的历史对话。
-- 每台电脑各开一个管理员，它只能看到本机的对话。
+- 管理员能看到它所在电脑上的对话，以及和这台电脑连好的其他电脑上的对话。连好了但暂时连不上的电脑会先跳过，等能连上了再算进来。
+- 自动提醒（"哪个做完了就告诉我"）只盯管理员所在的这台电脑；其他电脑的对话，每次重新排队时都会查一遍。
 - 为了找到你的项目，工具会只读地读取 T3 Code 的本地数据库。如果 T3 Code 升级后改了这个数据库，这里可能要跟着更新。
 - 跳过、隐藏了哪些对话，记在 `~/.claude/t3-session-manager/state.json`。
