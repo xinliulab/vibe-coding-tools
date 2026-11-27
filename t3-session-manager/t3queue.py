@@ -23,6 +23,10 @@ FINISHED = {"completed": "done", "idle": "done", "failed": "error",
             "cancelled": "stopped", "interrupted": "stopped", "rolled_back": "stopped"}
 
 STATE = Path.home() / ".claude" / "t3-session-manager" / "state.json"
+WAKE = STATE.parent / "wake.json"
+WAKE_LOG = STATE.parent / "wake.log"
+WAKE_TEXT = ("[t3-session-manager wake] A thread may have finished. Rebuild the queue and report "
+             "what is new. (Automatic message from the wake watcher on this computer, not typed by the user.)")
 
 
 def t3_home() -> Path:
@@ -143,9 +147,11 @@ def snapshot(self_id, remote_file=None):
                 "model": t.get("model"),
                 "waitedMin": max(0, int((now - upd).total_seconds() // 60)) if upd else None,
                 "updatedAt": t.get("updatedAt"),
+                "_run": t.get("latestRunId"),
             })
     for q in queue:
-        q.update({"machine": "this machine", "environmentId": None, "threadId": q["id"]})
+        q.update({"machine": "this machine", "environmentId": None, "threadId": q["id"],
+                  "fp": f"{q.pop('_run', None)}|{q['status']}"})
     if remote_file:
         add_remote(remote_file, state, now, queue, working, quiet)
     queue.sort(key=lambda q: q.get("updatedAt") or "")
@@ -190,6 +196,151 @@ def add_remote(remote_file, state, now, queue, working, quiet):
             })
 
 
+# ---------------------------------------------------------------- wake watcher
+# The T3 desktop app logs a "set-notification-badge" call each time a thread on any
+# connected machine finishes or needs the user. The watcher follows that local log
+# line and sends the manager thread a wake message, so the manager reports on its own.
+# It spends no model tokens and asks T3 for nothing until the badge changes.
+
+def pid_alive(pid):
+    if not pid:
+        return False
+    if os.name == "nt":
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return bool(ok) and code.value == 259
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def t3_is_foreground():
+    """Windows only: True when a T3 Code window has focus. Focusing T3 clears the badge,
+    which must not wake the manager."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    pid = wintypes.DWORD()
+    u.GetWindowThreadProcessId(u.GetForegroundWindow(), ctypes.byref(pid))
+    h = k.OpenProcess(0x1000, False, pid.value)
+    if not h:
+        return False
+    buf = ctypes.create_unicode_buffer(520)
+    size = wintypes.DWORD(520)
+    k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+    k.CloseHandle(h)
+    return "t3 code" in buf.value.lower()
+
+
+def wlog(msg):
+    try:
+        WAKE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(WAKE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(dt.datetime.now().strftime("%m-%d %H:%M:%S ") + msg + "\n")
+    except Exception:
+        pass
+
+
+def manager_state(tid):
+    try:
+        return t3_json(["thread", "show", tid, "--messages", "0"])["thread"]
+    except Exception as e:
+        return None if "no longer available" in str(e) or "not found" in str(e).lower() else {}
+
+
+def wake_watch(manager, debounce=8, min_gap=30, self_quiet=25):
+    log = t3_home() / "userdata" / "logs" / "desktop.trace.ndjson"
+    pos = log.stat().st_size if log.exists() else 0
+    pending, last_ping, ping_runs, last_check = None, 0.0, None, time.time()
+    wlog(f"watching for {manager}")
+    while True:
+        time.sleep(1)
+        now = time.time()
+        try:
+            size = log.stat().st_size
+        except OSError:
+            continue
+        if size < pos:                       # log rotated
+            pos = 0
+        if size > pos:
+            with open(log, "rb") as fh:
+                fh.seek(pos)
+                chunk = fh.read(size - pos)
+            pos = size
+            if b"set-notification-badge" in chunk and not t3_is_foreground():
+                pending = pending or now
+        if now - last_check > 300:
+            last_check = now
+            th = manager_state(manager)
+            if th is None or (th or {}).get("archived"):
+                wlog("manager thread is gone or archived; stopping")
+                return
+        if not pending or now - pending < debounce or now - last_ping < min_gap:
+            continue
+        pending = None
+        th = manager_state(manager)
+        if th is None or th.get("archived"):
+            wlog("manager thread is gone or archived; stopping")
+            return
+        if not th:
+            continue
+        runs = th.get("runCount")
+        if ping_runs is not None and runs == ping_runs:
+            continue                         # the last wake is still waiting to run
+        if th.get("status") not in LIVE:
+            upd = parse_time(th.get("updatedAt", ""))
+            if upd and (dt.datetime.now(dt.timezone.utc) - upd).total_seconds() < self_quiet:
+                continue                     # the badge moved because the manager itself just answered
+        code, out, err = run_t3(["thread", "send", manager, "-"], stdin_text=WAKE_TEXT)
+        last_ping, ping_runs = now, runs
+        wlog("wake sent" if code == 0 else "wake failed: " + (err or out).strip()[:200])
+
+
+def start_wake(manager):
+    try:
+        cur = json.loads(WAKE.read_text(encoding="utf-8"))
+    except Exception:
+        cur = {}
+    if pid_alive(cur.get("pid")):
+        if cur.get("manager") == manager:
+            return {"wake": "already running", "pid": cur["pid"]}
+        stop_wake()
+    args = [sys.executable, str(Path(__file__).resolve()), "--wake-watch", "--self", manager]
+    kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
+    if os.name == "nt":
+        flags = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        try:                                 # also leave the agent's job, so it outlives the agent process
+            p = subprocess.Popen(args, creationflags=flags | 0x01000000, **kw)
+        except OSError:
+            p = subprocess.Popen(args, creationflags=flags, **kw)
+    else:
+        p = subprocess.Popen(args, start_new_session=True, **kw)
+    WAKE.parent.mkdir(parents=True, exist_ok=True)
+    WAKE.write_text(json.dumps({"pid": p.pid, "manager": manager}), encoding="utf-8")
+    return {"wake": "started", "pid": p.pid}
+
+
+def stop_wake():
+    try:
+        cur = json.loads(WAKE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"wake": "not running"}
+    if pid_alive(cur.get("pid")):
+        import signal
+        os.kill(int(cur["pid"]), signal.SIGTERM)
+    WAKE.unlink(missing_ok=True)
+    return {"wake": "stopped"}
+
+
 def thread_fingerprint(tid):
     t = t3_json(["thread", "show", tid, "--messages", "0"])["thread"]
     return fingerprint(t), t.get("title")
@@ -207,6 +358,11 @@ def main():
     g.add_argument("--send", metavar="ID", help="Mark the thread, then send it the message read from stdin.")
     g.add_argument("--last", metavar="ID", help="Print the thread's latest messages.")
     g.add_argument("--watch", action="store_true", help="Print READY lines as threads newly finish.")
+    g.add_argument("--start-wake", action="store_true",
+                   help="Start the background wake watcher for this manager thread (one per computer).")
+    g.add_argument("--stop-wake", action="store_true", help="Stop the wake watcher.")
+    g.add_argument("--wake-status", action="store_true", help="Show whether the wake watcher runs.")
+    g.add_argument("--wake-watch", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--message-file", help="With --send: read the message from this UTF-8 file instead of stdin.")
     ap.add_argument("--remote", metavar="FILE",
                     help="Also queue threads from linked machines: a JSON file of t3_thread_list results per environment.")
@@ -217,6 +373,25 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     self_id = a.self_id.strip()
+
+    if a.wake_watch:
+        wake_watch(self_id)
+        return
+    if a.start_wake:
+        if not self_id or self_id == "none":
+            sys.exit(json.dumps({"error": "no manager thread id: run inside a T3 Code thread or pass --self"}))
+        print(json.dumps(start_wake(self_id)))
+        return
+    if a.stop_wake:
+        print(json.dumps(stop_wake()))
+        return
+    if a.wake_status:
+        try:
+            cur = json.loads(WAKE.read_text(encoding="utf-8"))
+        except Exception:
+            cur = {}
+        print(json.dumps({"running": pid_alive(cur.get("pid")), **cur}))
+        return
 
     if a.mark or a.unmark or a.ignore or a.unignore:
         s = load_state()
@@ -291,7 +466,15 @@ def main():
                     seen.add(key)
                     print(f"READY: {q['title']} | {q['kind']} | {q['id']}", flush=True)
 
-    print(json.dumps(snapshot(self_id, a.remote), ensure_ascii=False, indent=1))
+    snap = snapshot(self_id, a.remote)
+    # "new": queue items not reported before (or with new work since), recorded as reported now.
+    s = load_state()
+    ann = s.setdefault("announced", {})
+    snap["new"] = [q for q in snap["queue"] if ann.get(q["id"]) != q.get("fp")]
+    for q in snap["new"]:
+        ann[q["id"]] = q.get("fp")
+    save_state(s)
+    print(json.dumps(snap, ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":

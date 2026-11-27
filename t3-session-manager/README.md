@@ -41,7 +41,13 @@ New-Item -ItemType Junction -Path "$HOME\.claude\skills\t3-session-manager" -Tar
 2. It shows the first waiting thread: what it finished, or what it is asking you. Claude and Codex threads are in the same queue.
 3. Reply as if you were in that thread. The manager relays your words unchanged and shows the next thread.
 
-You can also say `next`, `skip`, `never show it`, or `full` (to see its whole last reply). You can ask it to tell you whenever a thread finishes. To go to a thread yourself, click it in the T3 Code sidebar.
+You can also say `next`, `skip`, `never show it`, or `full` (to see its whole last reply). To go to a thread yourself, click it in the T3 Code sidebar.
+
+**It reports on its own.** Whenever a thread on this computer or a linked one finishes, the manager wakes up and tells you which one finished and what it got done; you never have to ask. T3 Code does not wake one thread when another finishes, so the skill starts a small background watcher. The watcher follows the notification badge that the T3 desktop app writes to its local log, and messages the manager when the badge changes. It costs no model tokens, sends nothing anywhere else, and stops when the manager thread is archived or deleted.
+
+- T3's **Settings → Notifications** must not be **Off**, because the badge only moves when notifications are on. To keep the screen quiet, turn off banners and sounds for T3 Code in the operating system's notification settings (on Windows: Settings → System → Notifications → T3 Code → Show notification banners off).
+- T3 raises the badge only while you are not looking at T3, so reports arrive when your attention is elsewhere.
+- Work the manager starts itself runs as delegated tasks, and T3 wakes the manager directly when those end.
 
 ### Tips and limits
 
@@ -49,7 +55,8 @@ You can also say `next`, `skip`, `never show it`, or `full` (to see its whole la
 - Approvals can only be answered inside their own thread. The manager tells you which thread to open.
 - These threads are left out: threads you settled or snoozed in T3 Code, and history that T3 Code imported from other apps but never ran itself.
 - The manager sees the threads on its own computer and on the machines linked to it. A machine that is linked but not reachable right now is skipped until it is.
-- Automatic reports ("tell me when one finishes") watch only the manager's own computer. Linked machines are checked each time the queue is rebuilt.
+- One manager per computer gets the automatic reports. Starting a new manager moves the watcher to it.
+- The watcher relies on a line in the T3 desktop app's log. A T3 Code update that changes this log could require an update here.
 - To find your projects, the helper reads T3 Code's local database (read-only). A T3 Code update that changes this database could require an update here.
 - State (which threads you skipped or hid) lives in `~/.claude/t3-session-manager/state.json`.
 
@@ -58,7 +65,7 @@ You can also say `next`, `skip`, `never show it`, or `full` (to see its whole la
 | File | Purpose |
 |---|---|
 | `SKILL.md` | The instructions Claude follows as the manager |
-| `t3queue.py` | Queue helper: builds the queue, keeps the skip and hide lists, relays a message, and can watch for finished threads (standard library only) |
+| `t3queue.py` | Queue helper: builds the queue, keeps the skip and hide lists, relays a message, and runs the wake watcher (standard library only) |
 
 ## 中文
 
@@ -84,7 +91,13 @@ T3 Code Session Manager 是给 [T3 Code](https://t3.codes) 用的 [Session Manag
 2. 它给你看第一个在等的对话：做完了什么，或者在问你什么。Claude 和 Codex 的对话排在同一个队列里。
 3. 像在那个对话里一样回复，管理员原话转过去，再给你看下一个。
 
-还可以说 `下一个`、`跳过`、`以后别显示它`、`全文`（看它上一条的完整回复），或者让它"哪个做完了就告诉我"。想自己去某个对话，在 T3 Code 左边栏点它就行。
+还可以说 `下一个`、`跳过`、`以后别显示它`、`全文`（看它上一条的完整回复）。想自己去某个对话，在 T3 Code 左边栏点它就行。
+
+**它会主动汇报。**本机或连好的其他电脑上，只要有对话做完，管理员就会自己醒来，告诉你哪个做完了、做到了什么程度，不用你问。T3 Code 本身不会因为一个对话做完就叫醒另一个对话，所以这个技能会在后台开一个很小的程序：T3 桌面 app 每次更新提醒数字时会在本机日志里记一笔，这个小程序就盯着这一笔，一出现就给管理员发一条消息。它不耗模型额度，不往外发任何东西，管理员对话归档或删除后会自己停。
+
+- T3 的 **Settings → Notifications** 不能设成 **Off**，否则提醒数字不会变。不想让屏幕上弹东西的话，在系统的通知设置里把 T3 Code 的横幅和声音关掉（Windows：设置 → 系统 → 通知 → T3 Code → 关掉"显示通知横幅"）。
+- 你正看着 T3 的时候，T3 不会更新提醒数字，所以汇报会在你看别处的时候到。
+- 管理员自己开的活会用"委派"方式开，这些活一结束，T3 会直接叫醒管理员。
 
 ### 注意
 
@@ -92,6 +105,7 @@ T3 Code Session Manager 是给 [T3 Code](https://t3.codes) 用的 [Session Manag
 - 权限确认只能在那个对话里点，管理员会告诉你该去哪个对话。
 - 以下对话不会出现在队列里：你在 T3 Code 里标为完成（settle）或者稍后提醒（snooze）的对话，以及 T3 Code 从别的 app 导入、但从没在 T3 Code 里跑过的历史对话。
 - 管理员能看到它所在电脑上的对话，以及和这台电脑连好的其他电脑上的对话。连好了但暂时连不上的电脑会先跳过，等能连上了再算进来。
-- 自动提醒（"哪个做完了就告诉我"）只盯管理员所在的这台电脑；其他电脑的对话，每次重新排队时都会查一遍。
+- 每台电脑上只有一个管理员能收到自动汇报。新开一个管理员，后台小程序就会转到新的那个。
+- 后台小程序靠的是 T3 桌面 app 日志里的一行记录。如果 T3 Code 升级后改了日志格式，这里可能要跟着更新。
 - 为了找到你的项目，工具会只读地读取 T3 Code 的本地数据库。如果 T3 Code 升级后改了这个数据库，这里可能要跟着更新。
 - 跳过、隐藏了哪些对话，记在 `~/.claude/t3-session-manager/state.json`。
